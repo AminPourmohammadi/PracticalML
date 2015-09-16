@@ -1,0 +1,292 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Amin Pourmohammadi"
+date: "September 14, 2015"
+output: html_document
+---
+
+The first part of the code reads the data into R.
+
+```{r, warning=FALSE}
+library(tree)
+library(caret)
+library(MASS)
+library(randomForest)
+library(gbm)
+
+
+setwd('C:\\courses\\practical.ml')
+setInternet2(TRUE)
+URL1 = 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
+download.file(URL1,destfile = 'train.csv')
+URL2 = 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
+download.file(URL2, destfile = 'test.csv')
+
+# The code below makes sure that factor variables of train and test set match.
+train = read.csv(file = 'train.csv',stringsAsFactors = FALSE)
+test = read.csv(file = 'test.csv',stringsAsFactors = FALSE)
+
+names(test)=names(train)
+test[,160]='A'
+a=rbind(train,test)
+a[,2]=as.factor(a[,2])
+a[,5]=as.factor(a[,5])
+a[,160]=as.factor(a[,160])
+
+train=a[1:dim(train)[1],]
+test=a[-(1:dim(train)[1]),]
+```
+After we read the data into train and test sets, we want to screen out the variables with a lot of missing values in them, vairables with near zero variance and the first column which is just the observation number. To deal with other variables we also use both exploratory technique (drawing graphs) and PCA. Since we want to use cross validation to choose our model, we should do PCA and also plot, each time that we do the estimation for each fold. According to the book 'Introduction to Statistical Learning' it is serious error if we first pick the variables that we want to do the estimation on, and then to perform cross validation. In this section we devide the training data into 5 folds and then we perform exploratory analysis for the factor time variable. We do exploratory analysis and chi squared test for both username and the factor time variable because test data also has usernames that are in the training set and it seems it is one of the explanatory variables and it is not just some random number. If usernames of the test set was not in the train set I would remove it but now I do a chi squared test to see if there is an association.
+
+```{r,warning=FALSE}
+
+table( sapply(train, function(x) sum(is.na(x))) )
+not.na = sapply(train, function(x) sum(is.na(x)))==19216 
+# we remove the variables that had a lot of missing values.
+train = train[,not.na==FALSE]
+nzv = nearZeroVar(train)
+nzv
+# we remove the variables that have near zero variance
+train = train[,-nzv]
+# we remove the observation number. 
+train = train[,-c(1)]
+# we perform boxcox transformation on train dataset.
+BoxCox.trans = preProcess(train[,-c(1,4,58)],method='BoxCox')
+train[,-c(1,4,58)] = predict(BoxCox.trans, train[,-c(1,4,58)])
+# we partition the date into training set and testing set (for final evaluation)
+set.seed(1212)
+inTrain = createDataPartition(train$classe,p=.75,list = FALSE)
+training = train[inTrain,] 
+testing = train[-inTrain,]
+```
+So now we devide our training data into 5 folds and then we do chi squared tests to see whether factor variables are associated with the response. Then we perform PCA.
+```{r,warning=FALSE}
+
+set.seed(12)
+folds=createFolds(training$classe,k=5,returnTrain = TRUE,list=TRUE)
+sapply(folds,length)
+
+plot(x=train[folds[[1]],4],y=train[folds[[1]],58],xlab=names(train[4]),
+     ylab=names(train[58]),main='Scatter plot for fold1')
+chisq.test(x=training[folds[[1]],4],y=training[folds[[1]],58])
+plot(x=train[folds[[1]],1],y=train[folds[[1]],58],xlab=names(train[1]),
+     ylab=names(train[58]),main='Scatter plot for fold1')
+chisq.test(x=training[folds[[1]],1],y=training[folds[[1]],58])
+
+# the 4th column has association with the response in the first fold. so we keep it in the model for the first fold. Similarly for the name variable so we keep both in the first fold.
+plot(x=train[folds[[2]],4],y=train[folds[[2]],58],xlab=names(train[4]),
+     ylab=names(train[58]),main='Scatter plot for fold2')
+chisq.test(x=training[folds[[2]],4],y=training[folds[[2]],58])
+plot(x=train[folds[[2]],1],y=train[folds[[2]],58],xlab=names(train[1]),
+     ylab=names(train[58]),main='Scatter plot for fold2')
+chisq.test(x=training[folds[[2]],1],y=training[folds[[2]],58])
+# they are both significant in the second fold too.for the remaining folds we do not show the plot just the result of chi squared test.
+chisq.test(x=training[folds[[3]],4],y=training[folds[[3]],58])
+chisq.test(x=training[folds[[3]],1],y=training[folds[[3]],58])
+# we keep both of them in fold 3.
+chisq.test(x=training[folds[[4]],4],y=training[folds[[4]],58])
+chisq.test(x=training[folds[[4]],1],y=training[folds[[4]],58])
+# we keep both of them in the fourth fold.
+chisq.test(x=training[folds[[5]],4],y=training[folds[[5]],58])
+chisq.test(x=training[folds[[5]],1],y=training[folds[[5]],58])
+# and therefore we keep them in fold5 too.
+```
+So, factor variables are significantly associated with the response so we keep them in the model. 
+Then we check to see how PCA works in the training data set and whether it can reduce the number of variables. Using preProcess from caret library, we scale the  numeric variables and then do PCA on them. 
+```{r,warning=FALSE}
+scaled.data=training
+scale.mod = preProcess(training[,-c(1,4,58)],method=c('scale','center'))
+scaled.numeric = predict(scale.mod,training[,-c(1,4,58)])
+scaled.data[,-c(1,4,58)]=scaled.numeric[,-c(1,4,58)]
+
+
+PVE = rep(0,99)
+thresh = seq(from = .01, to = .99, by = .01)
+for (i in 1:99){
+  a = preProcess(training[,-c(1,4,58)],method='pca',thresh = thresh[i])
+  b = predict(a,training[,-c(1,4,58)])
+  PVE[i] = length(b)
+}
+  a = preProcess(training[,-c(1,4,58)],method='pca',thresh = .80)
+  b = predict(a,training[,-c(1,4,58)])
+
+
+plot(PVE,thresh,xlab='Number of PCs', ylab='Proportion of variance explained', col='coral',main='Proportion of variance explained vs the number of components  used', type = 'b', pch = 20)
+plot(b[,1],b[,2],col=training[,58],xlab='PC1', ylab='PC2',main='PC1 vs PC2 for the entire train data',pch=20)
+
+```
+From the plot for proportion of variance it seems that there is no good choice for number of PCs to use. We choose a threshold of 80% for PCA.
+
+First vs second principal component shows that those two can not separate between classes and therefore we expect that PCA will not help our model very much.
+
+Now we are ready to estimate models and compare them. We compare them by cross validation. So we write a cross validation function for different models and get the misclassification rates of all of them. We first estimate a decision tree with principal components.
+
+Notice that we do not perform centering and scaling every time we estimate a model, we just do it for PCA. For tree based models without PCA, centering and scaling is not necessary.
+```{r,warning=FALSE}
+
+tree.pca.misclassification = rep(0,5)
+for (i in 1:5){
+  fold = folds[[i]]
+  pca.training = training
+  
+  fold.scale.mod = preProcess(pca.training[fold,-c(1,4,58)],
+                              method=c('scale','center'))
+  scaled.numeric = predict(fold.scale.mod,pca.training[,-c(1,4,58)])
+  pca.training[,-c(1,4,58)] = scaled.numeric
+  
+  fold.pca.mod = preProcess(pca.training[fold,-c(1,4,58)],method='pca',thresh = .8)
+  pca.output = predict(fold.pca.mod,pca.training[,-c(1,4,58)])
+  pca.output = data.frame(pca.output,training[,c(1,4,58)])
+
+  fold.mod.fit = tree(classe~.,data=pca.output[fold,])
+  mod.pred = predict(fold.mod.fit, newdata = pca.output[-fold,],type='class')
+  result.matrix = confusionMatrix(mod.pred,pca.training[-fold,'classe'])
+  tree.pca.misclassification[i] = 1- result.matrix$overall[1]
+}
+mean(tree.pca.misclassification)
+```
+We now fit a tree model without principal components:
+```{r,warning=FALSE}
+model.training = training
+tree.misclassification = rep(0,5)
+for (i in 1:5){
+  fold = folds[[i]]
+
+  fold.mod.fit = tree(classe~.,data=training[fold,])
+  mod.pred = predict(fold.mod.fit, newdata = training[-fold,],type='class')
+  result.matrix = confusionMatrix(mod.pred,training[-fold,'classe'])
+  tree.misclassification[i] = 1- result.matrix$overall[1]
+}
+mean(tree.misclassification)
+```
+We see that tree model performs better on raw data and not on principal components model.
+
+We now fit a random forest model with principal components:
+```{r,warning=FALSE}
+
+rf.pca.misclassification = rep(0,5)
+for (i in 1:5){
+  fold = folds[[i]]
+  pca.training = training
+  
+  fold.scale.mod = preProcess(pca.training[fold,-c(1,4,58)],method=c('scale','center'))
+  scaled.numeric = predict(fold.scale.mod,pca.training[,-c(1,4,58)])
+  pca.training[,-c(1,4,58)] = scaled.numeric
+  
+  fold.pca.mod = preProcess(pca.training[fold,-c(1,4,58)],method='pca',thresh = .8)
+  pca.output = predict(fold.pca.mod,pca.training[,-c(1,4,58)])
+  pca.output = data.frame(pca.output,training[,c(1,4,58)])
+
+  fold.mod.fit = randomForest(classe~.,data=pca.output[fold,])
+  mod.pred = predict(fold.mod.fit, newdata = pca.output[-fold,],type='class')
+  result.matrix = confusionMatrix(mod.pred,pca.training[-fold,'classe'])
+  rf.pca.misclassification[i] = 1- result.matrix$overall[1]
+}
+mean(rf.pca.misclassification)
+```
+And we fit a random forest without principal components.
+```{r,warning=FALSE}
+model.training = training
+rf.misclassification = rep(0,5)
+for (i in 1:5){
+  fold = folds[[i]]
+
+  fold.mod.fit = randomForest(classe~.,data=training[fold,])
+  mod.pred = predict(fold.mod.fit, newdata = training[-fold,],type='class')
+  result.matrix = confusionMatrix(mod.pred,training[-fold,'classe'])
+  rf.misclassification[i] = 1- result.matrix$overall[1]
+}
+mean(rf.misclassification)
+```
+
+
+Performing GBM without PCA
+```{r, warning = FALSE}
+
+model.training = training
+gbm.misclassification = rep(0,5)
+for (i in 1:5){
+  fold = folds[[i]]
+  
+  fold.mod.fit = gbm(classe~.,data=training[fold,],n.trees=2000,interaction.depth = 2)
+  mod.pred = predict(fold.mod.fit, newdata =   training[-fold,],n.trees=2000,type='response')
+  mod.pred=mod.pred[,,1]
+  model.prediction=rep(0,dim(model.training[-fold,])[1])
+  pred.pred = as.data.frame(mod.pred)
+  for (j in 1:dim(model.training[-fold,])[1]){
+    model.prediction[j]=names(pred.pred[which.max(pred.pred[j,])])
+  }
+  result.matrix = confusionMatrix(model.prediction,training[-fold,'classe'])
+  gbm.misclassification[i] = 1- result.matrix$overall[1]
+}
+mean(gbm.misclassification)
+```
+
+performing gbm with PCA.
+
+
+
+Performing GBM with PCA.
+```{r,warning=FALSE}
+gbm.pca.misclassification = rep(0,5)
+for (i in 1:5){
+  fold = folds[[i]]
+  pca.training = training
+  
+  fold.scale.mod = preProcess(pca.training[fold,-c(1,4,58)],method=c('scale','center'))
+  scaled.numeric = predict(fold.scale.mod,pca.training[,-c(1,4,58)])
+  pca.training[,-c(1,4,58)] = scaled.numeric
+
+  fold.pca.mod = preProcess(pca.training[fold,-c(1,4,58)],method='pca',thresh = .8)
+  pca.output = predict(fold.pca.mod,pca.training[,-c(1,4,58)])
+  pca.output = data.frame(pca.output,training[,c(1,4,58)])
+    
+  
+  fold.mod.fit = gbm(classe~.,data=pca.output[fold,],n.trees=2000,interaction.depth = 2)
+  mod.pred = predict(fold.mod.fit, newdata =     pca.output[-fold,],n.trees=2000,type='response')
+  
+  mod.pred=mod.pred[,,1]
+  model.prediction=rep(0,dim(model.training[-fold,])[1])
+  pred.pred = as.data.frame(mod.pred)
+  for (j in 1:dim(model.training[-fold,])[1]){
+    model.prediction[j]=names(pred.pred[which.max(pred.pred[j,])])
+  }
+  result.matrix = confusionMatrix(model.prediction,training[-fold,'classe'])
+  gbm.pca.misclassification[i] = 1- result.matrix$overall[1]
+  
+}
+
+mean(gbm.pca.misclassification)
+```
+Given all these models it seems that Random Forest without PCA performs best. Now to get an assessment about its performance we should get its error on the  testing set. To do so, once more we fit the Random Forest on the whole of training set and then we use testing set to get the error rate. I need to state once more that the error rate below is for observations from the same users as the training set, at the same times as the ones in the train set. In fact if it were the case that username and the factor time variable were completely random this model would be wrong.
+
+```{r,warning=FALSE}
+
+mod.fit = randomForest(classe~.,data=training)
+mod.pred = predict(mod.fit, newdata = testing,type='class')
+result.matrix = confusionMatrix(mod.pred,testing[,'classe'])
+rf.misclassification = 1- result.matrix$overall[1]
+rf.misclassification
+```
+As can be seen this model's performance is like what we get from cross-validation.
+
+Now that we chose our model we make prediction for the test data. I should say that since the factor variables on time and username are the same in test and train data, we use those two variables in our model. If we did not have the same values for these variables, then we should have left them out from our models, because then they would be irrelevant variables.
+```{r,warning=FALSE}
+# not.na are those variables that do not have missing values. The other variables #have a lot of missing values, almost all of their observations are missing. we #leave them out.
+# we remove the variables that had a lot of missing values using vector not.na
+test = test[,not.na==FALSE]
+
+# we remove the variables that have near zero variance
+test = test[,-nzv]
+# we remove the observation number. 
+test = test[,-c(1)]
+# apply boxcox transformation that we derived in the beginning
+test[,-c(1,4)] = predict(BoxCox.trans, test[,-c(1,4)])
+
+mod.fit = randomForest(classe~.,data=training)
+mod.pred = predict(mod.fit, newdata = test,type='class')
+problem_id = 1:20
+a = data.frame(problem_id,mod.pred)
+
+write.table(a,file='result.txt',row.names = FALSE,sep = '\t')
+```
